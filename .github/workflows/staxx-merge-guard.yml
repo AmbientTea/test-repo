@@ -1,0 +1,60 @@
+# Staxx Merge Guard
+#
+# Prevents accidental merges of stacked PRs that target other branches
+# instead of main. Uses the commit Status API so the guard can be
+# required via branch protection rules.
+#
+# Behavior:
+#   PR targets main       → auto-posts success status → merge allowed
+#   PR targets other      → no status posted → required check stays pending → merge blocked
+#   Manual workflow_dispatch → posts success for specified PR → merge unblocked
+#
+# Setup:
+#   1. Push this workflow to the repo
+#   2. Open a PR targeting main so the status name appears in GitHub
+#   3. Go to Settings → Branches → Branch protection rules for main
+#   4. Enable "Require status checks to pass" and add "staxx/merge-guard"
+#
+# To manually approve a stacked PR for merge (e.g. after parent landed):
+#   gh workflow run staxx-merge-guard.yml -f pr_number=<number>
+
+name: Staxx Merge Guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to approve for merge
+        required: true
+        type: number
+
+permissions:
+  statuses: write
+  pull-requests: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Auto-approve PRs targeting main
+        if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }} \
+            -f state=success \
+            -f context=staxx/merge-guard \
+            -f description="PR targets main — safe to merge"
+
+      - name: Manual override
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_SHA=$(gh pr view ${{ inputs.pr_number }} --repo ${{ github.repository }} --json headRefOid -q .headRefOid)
+          gh api repos/${{ github.repository }}/statuses/$PR_SHA \
+            -f state=success \
+            -f context=staxx/merge-guard \
+            -f description="Manually approved for merge"
